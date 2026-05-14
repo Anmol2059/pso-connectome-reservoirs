@@ -1,263 +1,288 @@
-# 🧠 PSO-Optimised Connectome Reservoirs
+# Wild Reservoirs: Bio-Inspired Optimisation of Neural Connectomes from Worm to Human
 
-> **Can swarm intelligence match 500 million years of evolution?**
-> We rewire real biological brain connectomes with PSO and test whether the result
-> outperforms — or rediscovers — nature's own solution.
+> **Can algorithms born from animal behaviour rediscover what evolution wired into animal brains?**
+> We take real biological connectomes — from the 302-neuron worm to the human cortex — plug them
+> directly into reservoir computers, then unleash swarm and evolutionary optimisers to see whether
+> they can outperform 500 million years of natural selection.
 
-**Course:** Bio-Inspired Learning — UPM, MUTSC &nbsp;|&nbsp; **Format:** IEEE
-
----
-
-## 🔬 Research Question
-
-Real brains are wired by evolution. PSO is a swarm algorithm that optimises
-by collective exploration. This project asks:
-
-1. Can PSO find connectome weights that **match or surpass biological Memory Capacity**?
-2. Does PSO, starting from scratch, **rediscover the weighted structure** evolution built?
-3. If both succeed — what does that tell us about the computational demands of neural topology?
+**Course:** Bio-Inspired Learning &nbsp;|&nbsp; **Institution:** ETSI Telecomunicación, UPM Madrid &nbsp;|&nbsp; **Format:** IEEE
 
 ---
 
-## 🐝 Real Biological Datasets
+## The Experiment in One Sentence
 
-Connectomes are fetched automatically via `netneurotools.fetch_famous_gmat`.
-
-| Species | Nodes | Edges | Density | Weights | Source |
-|---------|------:|------:|--------:|---------|--------|
-| 🪰 Fruit fly (*Drosophila*) | 49  | 1 950 | 82.9% | Continuous | Chiang et al. 2011 |
-| 🐭 Mouse cortex             | 112 | 6 542 | 52.6% | Continuous | Rubinov et al. 2015 |
-| 🐀 Rat cortex               | 73  | 1 923 | 36.6% | Continuous | Bota et al. 2015 |
-| 🐒 Macaque                  | 242 | 4 090 |  7.0% | **Binary** | Modha & Singh 2010 |
-
-All connectomes are **directed and asymmetric**. Macaque is binary (presence/absence only);
-PSO on macaque is treated as a separate sub-experiment (adding continuous weights to topology-only data).
+Seven real brain connectomes. Three bio-inspired optimisers. Two computational tasks.
+Each optimiser tries to rewire the weights of a biological network; we ask whether it beats nature.
 
 ---
 
-## ⚡ Quick Start
+## Biological Connectomes
+
+All connectomes are downloaded automatically via `netneurotools.datasets.fetch_famous_gmat`.
+No synthetic data. Every network is a real measurement from peer-reviewed neuroscience.
+
+| Animal | Nodes | Edges | Density | Weight type | Input nodes | Source |
+|--------|------:|------:|--------:|-------------|-------------|--------|
+| *C. elegans* (roundworm) | 279 | 2 194 | 2.8% | Continuous (synapse counts) | Sensory neurons (mechanosensory + chemosensory, ~65 cells) | Varshney et al. 2011 |
+| *Drosophila* (fruit fly) | 49 | 1 950 | 82.9% | Continuous (projection strength) | Olfactory network | Chiang et al. 2011 |
+| Mouse cortex | 112 | 6 542 | 52.6% | Continuous (axonal tracing) | Random 20% (seed=42) | Rubinov et al. 2015 |
+| Rat cortex | 73 | 1 923 | 36.6% | Continuous (axonal tracing) | Random 20% (seed=42) | Bota et al. 2015 |
+| Macaque — binary | 242 | 4 090 | 7.0% | **Binary** (0/1 connectivity) | Random 20% (seed=42) | Modha & Singh 2010 |
+| Macaque — weighted | 29 | 841 | 99.9% | Continuous (FLNe tracing) | Random 20% (seed=42) | Markov et al. 2014 |
+| Human cortex | 83 | ~3 500 | ~52% | Continuous (DTI tractography) | Sensorimotor/visual parcels | Cammoun et al. 2012 |
+
+**Why two macaque networks?** Macaque-binary and macaque-weighted share the same anatomical
+structure (same species, same cortical area set) but differ only in weight encoding.
+This isolates whether optimisers respond to *topology* or *weight magnitudes*.
+
+**Human data note:** Human structural connectivity is measured non-invasively by diffusion
+MRI tractography (Lausanne scale-033, group-averaged ~70 adults). It is symmetric and
+undirected, unlike the axonal-tracing networks from other species — a deliberately chosen
+contrast that broadens the phylogenetic scope from worm to human.
+
+---
+
+## Bio-Inspired Optimisers
+
+Three algorithms, each inspired by a different kind of collective animal intelligence:
+
+### Particle Swarm Optimisation (PSO)
+Mimics bird flocking and fish schooling. Each particle (a candidate weight matrix) moves
+through the solution space attracted to its personal best and the swarm's global best.
+
+| Parameter | Value |
+|-----------|------:|
+| Inertia w | 0.7 |
+| Cognitive c1 | 2.0 |
+| Social c2 | 2.0 |
+| Source | Kennedy & Eberhart, ICNN 1995 |
+
+### Differential Evolution (DE/rand/1/bin)
+Mimics genetic mutation and recombination in a population of solutions.
+A trial vector is created by adding scaled differences between random population members;
+binomial crossover accepts it if it improves on the target.
+
+| Parameter | Value |
+|-----------|------:|
+| Scale factor F | 0.8 |
+| Crossover rate CR | 0.9 |
+| Source | Storn & Price, *J. Global Optimization* 1997 |
+
+### Grey Wolf Optimiser (GWO)
+Mimics the hunting hierarchy of grey wolf packs. The three best solutions are named
+alpha, beta, and delta wolves; the remaining population updates its position by
+encircling the hunt position estimated from all three leaders.
+
+| Parameter | Value |
+|-----------|------:|
+| a decreases | 2 → 0 linearly |
+| Source | Mirjalili et al., *Advances in Engineering Software* 2014 |
+
+**All three share the same budget:** 20 particles × 50 iterations = 1 000 objective evaluations per run.
+
+---
+
+## Computational Tasks
+
+### Memory Capacity (MC)
+Reservoir is driven by an i.i.d. Uniform[−1, 1] signal. A Ridge readout is trained to
+reconstruct the input delayed by k steps, for k = 1 … 50.
+
+$$MC = \sum_{k=1}^{50} R^2\!\bigl(u[t-k],\; \hat{u}[t-k]\bigr)$$
+
+Higher MC = longer memory span. Theoretical maximum for N nodes is N.
+
+### Lorenz Attractor Prediction
+Reservoir is driven by the x-coordinate of a Lorenz trajectory (σ=10, ρ=28, β=8/3, dt=0.02).
+A Ridge readout predicts the *next* x value (one-step-ahead).
+
+$$\text{NRMSE} = \frac{\sqrt{\langle (y - \hat{y})^2 \rangle}}{y_{\max} - y_{\min}}$$
+
+Lower NRMSE = better chaotic forecasting.
+
+---
+
+## Experimental Design
+
+### Echo State Network Setup
+
+| Parameter | Value | Rationale |
+|-----------|------:|-----------|
+| Spectral radius ρ | **0.97** | MC increases monotonically as ρ → 1 (Dambre et al. 2012) |
+| Washout | 200 steps | Eliminates transient initial states |
+| Signal length | 2 000 steps | After washout |
+| MC lags | 50 | Captures medium-range memory |
+| Train / test split | 70% / 30% | — |
+| Baseline readout | RidgeCV, α ∈ {0.01, 0.1, 1, 10, 100}, 5-fold | Cross-validated, prevents overfitting |
+| Optimiser readout | Ridge, α = 1.0 (fixed) | CV too slow inside 1 000-eval loop |
+
+### Four Experimental Conditions
+
+| Condition | Initialisation | Purpose |
+|-----------|---------------|---------|
+| **Biological** | Fixed bio weights (no optimisation) | Nature's solution |
+| **PSO-A / DE-A / GWO-A** | Gaussian(bio, 0.3·σ_bio) — close to biology | Fine-tune biological structure |
+| **PSO-B / DE-B / GWO-B** | Uniform(0, max_w) — random start | Optimise from scratch |
+| **Random** | Uniform(0, max_w), not optimised | Null control |
+
+### Anti-Selection-Bias (Held-Out Evaluation)
+
+A critical design decision: optimisers work on **signal A** (`seed = run`).
+All reported scores — biological, optimised, random — are evaluated on a separate
+**held-out signal B** (`seed = run + 100`).
+
+```
+Run 0:  optimise on seed=0   →  report scores on seed=100
+Run 1:  optimise on seed=1   →  report scores on seed=101
+Run 2:  optimise on seed=2   →  report scores on seed=102
+...
+```
+
+Without this, PSO would be compared against biology on the exact signal it maximised — an
+unfair advantage that would inflate apparent optimiser gains.
+
+### GPU Acceleration
+
+All P=20 candidate networks are evaluated **simultaneously** via a single batched
+`torch.bmm` call on the GPU (NVIDIA RTX 6000 Ada, CUDA 12.8). The ESN simulation loop
+runs in Python but matrix multiplications are offloaded to GPU — giving ~10–30× speedup
+over sequential CPU evaluation for medium/large connectomes.
+
+### Statistical Analysis
+
+- **5 independent runs** per (species, algorithm, task, condition)
+- **Paired t-test** (df = 4): optimised vs biological, within the same run index
+- **Cohen's d** reported alongside every p-value (essential at df = 4 where power is limited)
+- Significance: `***` p < 0.001 · `**` p < 0.01 · `*` p < 0.05 · `ns` not significant
+
+---
+
+## Quick Start
 
 ```bash
 git clone https://github.com/Anmol2059/pso-connectome-reservoirs.git
 cd pso-connectome-reservoirs
 
-# 1. Virtual environment
+# 1. Create virtual environment
 python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
+source venv/bin/activate       # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
-# 2. Install conn2res (local fork, no-deps)
+# 2. Install conn2res (ESN library, no-deps install)
 git clone https://github.com/netneurolab/conn2res.git
 cd conn2res && pip install --no-deps . && cd ..
 
-# 3. Run the full pipeline
+# 3. Run the full pipeline  (~60-90 min on GPU, ~4-6 hr on CPU)
 cd project
 bash run.sh
 ```
 
-> 💡 **Apple Silicon (MPS):** PyTorch auto-detects the MPS backend — step 03 runs
-> the entire PSO swarm as a single batched `torch.bmm` call, cutting runtime
-> significantly vs CPU.
+> **GPU (NVIDIA):** PyTorch auto-detects CUDA. All 20-particle batches run as a single `torch.bmm`.
+> **Apple Silicon:** MPS backend is used automatically — significant speedup vs CPU.
+> **CPU-only:** Still works; just slower on large connectomes (macaque, C. elegans).
 
 ---
 
-## 🗂️ Pipeline
+## Pipeline
 
 ```
 bash run.sh
 │
-├── 00  fetch_real_connectomes.py   Download & preprocess 4 biological connectomes
-│                                   → data/{species}/conn.npy + labels.npy
+├── 00  fetch_real_connectomes.py   Download & preprocess 7 biological connectomes
+│                                   → data/{species}/conn.npy  (weight matrix)
+│                                   → data/{species}/labels.npy (input node flags)
 │
 ├── 01  step01_explore.py           Visualise weight matrices & degree distributions
 │                                   → images/01_matrix_heatmaps.png
 │                                   → images/02_degree_distributions.png
 │
-├── 02  step02_baselines.py         MC + Lorenz baselines (5 independent runs, RidgeCV)
+├── 02  step02_baselines.py         MC + Lorenz baselines for all 7 species
+│                                   5 runs × RidgeCV readout × held-out eval
 │                                   → data/baseline_results.csv
 │                                   → images/03_mc_baselines.png
 │                                   → images/04_lorenz_baselines.png
 │
-├── 03  step03_pso.py               PSO optimisation — 3 conditions × 4 species × 5 runs
-│                                   held-out evaluation (PSO optimises on signal A,
-│                                   all scores reported on held-out signal B)
-│                                   → data/pso_results.csv
-│                                   → data/{sp}/conn_pso_a.npy + conn_pso_b.npy
-│                                   → images/05_pso_convergence.png
+├── 03  step03_pso.py               PSO + DE + GWO optimisation
+│                                   3 algorithms × 2 tasks × 7 species × 5 runs
+│                                   GPU-batched, held-out evaluation
+│                                   → data/opt_results.csv
+│                                   → images/05_convergence.png
 │
-├── 04  step04_analysis.py          Paired t-tests + Cohen's d, box plots,
-│                                   weighted directed graph metrics (Fagiolo 2007),
-│                                   input-node sensitivity analysis
+├── 04  step04_analysis.py          Paired t-tests + Cohen's d
+│                                   Weighted directed graph topology metrics
+│                                   Input-node sensitivity analysis
 │                                   → data/stats_summary.csv
 │                                   → data/graph_metrics.csv
 │                                   → data/input_sensitivity.csv
 │                                   → images/06_mc_boxplots.png
-│                                   → images/07_graph_metrics.png
+│                                   → images/07_lorenz_boxplots.png
+│                                   → images/08_graph_metrics.png
 │
-└── 05  step05_summary.py           Compile everything → data/summary.txt
-                                    (LLM-ready: all results, methods, reviewer
-                                     responses, figure descriptions in one file)
+└── 05  step05_summary.py           Compile full results → data/summary.txt
 ```
 
 Each step logs to `logs/step0X.log` and can be re-run independently.
 
 ---
 
-## ⏱️ Expected Runtime
+## Expected Runtime
 
-| Step | Apple Silicon (MPS) | CPU only |
-|------|:-------------------:|:--------:|
-| 00 — fetch data | ~1 min | ~1 min |
-| 01 — explore | ~5 sec | ~5 sec |
-| 02 — baselines (RidgeCV) | ~5–10 min | ~10–20 min |
-| 03 — PSO fly | ~1 min | ~5 min |
-| 03 — PSO mouse | ~5–7 min | ~30 min |
-| 03 — PSO rat | ~3–4 min | ~15 min |
-| 03 — PSO macaque | ~25–35 min | ~2–3 hr |
-| 04–05 — analysis | ~3 min | ~3 min |
-| **Total** | **~45–65 min** | **~3–5 hr** |
+| Step | NVIDIA GPU | CPU only |
+|------|:----------:|:--------:|
+| 00 — fetch connectomes | ~1 min | ~1 min |
+| 01 — explore & plot | ~5 sec | ~5 sec |
+| 02 — baselines (7 species) | ~5 min | ~20 min |
+| 03 — optimise (PSO+DE+GWO, 7 species) | ~60–90 min | ~4–6 hr |
+| 04–05 — analysis + summary | ~3 min | ~3 min |
+| **Total** | **~70–100 min** | **~5–7 hr** |
 
 ---
 
-## 🧪 Experimental Design
-
-### Echo State Network (ESN)
-
-Each connectome is used directly as the reservoir weight matrix.
-A sparse random input weight matrix `w_in` projects a scalar signal into the network.
-A Ridge regression readout maps the reservoir states to targets.
-
-| Parameter | Value | Source |
-|-----------|------:|--------|
-| Spectral radius ρ | **0.97** | Dambre et al. 2012 — MC ↑ as ρ → 1 |
-| Washout steps | 200 | Standard ESN practice |
-| Signal length | 2 000 steps | — |
-| Max lag (MC) | 50 | Extended from typical 20 |
-| Train / test | 70% / 30% | — |
-| Readout (baselines) | RidgeCV (α ∈ {0.01, 0.1, 1, 10, 100}, 5-fold) | Prevents overfitting |
-| Readout (PSO inner loop) | Ridge (α = 1.0) | CV too slow in 1000-eval loop |
-
-### Benchmark Tasks
-
-**Memory Capacity (MC)**
-$$MC = \sum_{k=1}^{50} R^2\bigl(u[t],\; \hat{y}[t-k]\bigr)$$
-Input: i.i.d. Uniform[−1, 1]. Target: delayed recall up to 50 lags.
-Higher is better.
-
-**Lorenz Prediction**
-One-step-ahead prediction of the Lorenz x-coordinate (σ=10, ρ=28, β=8/3).
-Scored with NRMSE — lower is better.
-
-### PSO Configuration
-
-| Parameter | Value | Source |
-|-----------|------:|--------|
-| Cognitive c1 | 2.0 | Kennedy & Eberhart 1995 |
-| Social c2 | 2.0 | Kennedy & Eberhart 1995 |
-| Inertia w | 0.7 | Kennedy & Eberhart 1995 |
-| Particles | 20 | — |
-| Iterations | **50** | 1 000 evaluations/run |
-| Weight bound | [0, bio\_max × 3] | Biologically plausible |
-| PSO runs | 5 per condition | Gives paired distributions |
-
-**Three conditions per species:**
-
-| Condition | Initialisation | Purpose |
-|-----------|---------------|---------|
-| 🔵 **Biological** | Fixed bio weights | Reference baseline |
-| 🟢 **PSO-A** | Gaussian(bio, 0.3·σ\_bio) | Fine-tune biology |
-| 🟠 **PSO-B** | Uniform(0, max\_w) | Optimise from scratch |
-| ⚫ **Random** | Uniform(0, max\_w), no PSO | Null control |
-
-### Fair Evaluation (Anti-Selection-Bias)
-
-A key design fix: PSO optimises weights on **signal A** (`seed = run`).
-All reported scores — including the biological baseline — are evaluated on a
-separate **held-out signal B** (`seed = run + 100`). This prevents PSO from
-being compared against biology on the exact signal it was maximised for.
-
-```
-run 0:  PSO optimises on seed=0  →  all scores reported on seed=100
-run 1:  PSO optimises on seed=1  →  all scores reported on seed=101
-...
-```
-
-PSO particle initialisation uses a third independent seed (`run × 997 + 31`)
-to prevent confounding between swarm diversity and signal variance.
-
-### Statistical Analysis
-
-- **Paired t-test** (df = 4): PSO-A vs Bio, PSO-B vs Bio, Random vs Bio
-- **Cohen's d** reported alongside every test — essential at df = 4 where
-  statistical power is limited (threshold: d ≈ 0.2 small, 0.5 medium, 0.8 large)
-- Significance: `***` p < 0.001 · `**` p < 0.01 · `*` p < 0.05 · `ns` not significant
-
-### Graph Topology
-
-Metrics computed on **weighted directed** graphs (Fagiolo 2007):
-
-| Metric | Method | Why not binary? |
-|--------|--------|----------------|
-| Clustering coefficient | `nx.average_clustering(DiGraph, weight=...)` | Weighted differs across conditions |
-| Path length | Dijkstra with distance = 1/weight | Binary path = identical (topology unchanged) |
-| Small-world σ | γ/λ, directed formula: mean\_k = edges/nodes | No factor-2 for directed |
-
----
-
-## 📂 Outputs
+## Outputs
 
 | File | Description |
 |------|-------------|
-| `data/baseline_results.csv` | MC + Lorenz per run per species (bio only) |
-| `data/pso_results.csv` | Held-out MC for all 4 conditions × all runs |
-| `data/stats_summary.csv` | t-stat, p-value, Cohen's d, Δ% per comparison |
-| `data/graph_metrics.csv` | Weighted directed clustering / path / σ |
-| `data/input_sensitivity.csv` | Baseline MC across 4 input-node seeds |
-| `data/summary.txt` | 📋 **LLM-ready full report text** — paste into GPT/Claude |
-| `images/01_matrix_heatmaps.png` | Connectome weight matrices (log-scale for fly) |
-| `images/02_degree_distributions.png` | In/out-degree histograms |
-| `images/03_mc_baselines.png` | Biological MC baseline (mean ± SD) |
-| `images/04_lorenz_baselines.png` | Biological Lorenz NRMSE baseline |
-| `images/05_pso_convergence.png` | All 5 PSO runs (light) + best (bold) |
-| `images/06_mc_boxplots.png` | Box plots with significance brackets + Cohen's d |
-| `images/07_graph_metrics.png` | Weighted directed graph metric comparison |
+| `data/baseline_results.csv` | MC + Lorenz per run, 7 species, biological weights |
+| `data/opt_results.csv` | Held-out scores, all conditions × algorithms × species |
+| `data/stats_summary.csv` | t-stat, p-value, Cohen's d, Δ% for every comparison |
+| `data/graph_metrics.csv` | Weighted directed clustering / path / small-world σ |
+| `data/input_sensitivity.csv` | MC baseline across 4 input-node seeds |
+| `data/summary.txt` | Full results report (human + LLM readable) |
 
 ---
 
-## 🎨 Colour Convention
+## Acknowledgements
 
-| Condition | Colour | Hex |
-|-----------|--------|-----|
-| 🔵 Biological | Blue | `#2196F3` |
-| 🟢 PSO from biology (PSO-A) | Green | `#4CAF50` |
-| 🟠 PSO from random (PSO-B) | Orange | `#FF5722` |
-| ⚫ Random null | Grey | `#9E9E9E` |
+This work builds on open neuroscience datasets and open-source tools.
+We thank the teams behind:
+
+- **Varshney et al. 2011** — *C. elegans* connectome (279 chemical-synapse neurons). [PLOS Comp. Biol.](https://doi.org/10.1371/journal.pcbi.1001066)
+- **Chiang et al. 2011** — *Drosophila* whole-brain wiring (49 regions). [Current Biology](https://doi.org/10.1016/j.cub.2010.11.056)
+- **Rubinov et al. 2015** — Mouse cortex connectome (112 regions). [PNAS](https://doi.org/10.1073/pnas.1420315112)
+- **Bota et al. 2015** — Rat cortical connectome (73 regions). [PNAS](https://doi.org/10.1073/pnas.1504394112)
+- **Modha & Singh 2010** — Macaque long-distance pathways, binary (242 regions). [PNAS](https://doi.org/10.1073/pnas.1008054107)
+- **Markov et al. 2014** — Macaque cortex, FLNe continuous weights (29 core areas). [Cerebral Cortex](https://doi.org/10.1093/cercor/bhs270)
+- **Cammoun et al. 2012** — Human structural MRI, Lausanne atlas scale-033 (83 parcels). [J. Neurosci. Methods](https://doi.org/10.1016/j.jneumeth.2011.09.031)
+- **netneurotools** (Markello et al. 2022) — Python toolbox for accessing all the above datasets. [GitHub](https://github.com/netneurolab/netneurotools)
+- **conn2res** — Reservoir computing on connectomes. [GitHub](https://github.com/netneurolab/conn2res)
+
+### Algorithm references
+
+- Kennedy & Eberhart (1995) — Particle swarm optimization. *IEEE ICNN*. [DOI](https://doi.org/10.1109/ICNN.1995.488968)
+- Storn & Price (1997) — Differential evolution. *J. Global Optimization*. [DOI](https://doi.org/10.1023/A:1008202821328)
+- Mirjalili et al. (2014) — Grey wolf optimizer. *Advances in Engineering Software*. [DOI](https://doi.org/10.1016/j.advengsoft.2013.12.007)
+
+### Reservoir computing references
+
+- Dambre et al. (2012) — Information processing capacity of dynamical systems. *Scientific Reports*. [DOI](https://doi.org/10.1038/srep00514)
+- Lukoševičius & Jaeger (2009) — Reservoir computing approaches to RNN training. *Computer Science Review*. [DOI](https://doi.org/10.1016/j.cosrev.2009.03.005)
+- Verstraeten et al. (2010) — An experimental unification of reservoir computing methods. *Neural Networks*. [DOI](https://doi.org/10.1016/j.neunet.2007.04.003)
+- Fagiolo (2007) — Clustering in complex directed networks. *Physical Review E*. [DOI](https://doi.org/10.1103/PhysRevE.76.026107)
 
 ---
 
-## 📦 Dependencies
+## Authors
 
-| Package | Role |
-|---------|------|
-| `conn2res` | ESN implementation on connectomes |
-| `netneurotools` | Real connectome dataset fetching |
-| `pyswarms` | GlobalBestPSO optimiser |
-| `networkx` | Graph topology metrics |
-| `scikit-learn` | RidgeCV readout |
-| `scipy` | Lorenz ODE · paired t-tests · sparse eigenvalues |
-| `torch` *(optional)* | MPS/CUDA batched ESN via `torch.bmm` |
-| `numpy / pandas / matplotlib` | Core numerics, data, figures |
+Anmol Guragain · Savvas Kakalis · Juan Ignacio Godino Llorente
 
----
-
-## 📚 References
-
-- Chiang et al. (2011). Three-dimensional reconstruction of brain-wide wiring networks in Drosophila. *Current Biology*.
-- Rubinov et al. (2015). Wiring cost and topological participation of the mouse brain connectome. *PNAS*.
-- Bota et al. (2015). Architecture of the cerebral cortical association connectome underlying cognition. *PNAS*.
-- Modha & Singh (2010). Network architecture of the long-distance pathways in the macaque brain. *PNAS*.
-- Kennedy & Eberhart (1995). Particle swarm optimization. *ICNN*.
-- Dambre et al. (2012). Information processing capacity of dynamical systems. *Scientific Reports*.
-- Lukoševičius & Jaeger (2009). Reservoir computing approaches to recurrent neural network training. *Computer Science Review*.
-- Fagiolo (2007). Clustering in complex directed networks. *Physical Review E*.
-- Verstraeten et al. (2010). An experimental unification of reservoir computing methods. *Neural Networks*.
+ETSI de Telecomunicación, Universidad Politécnica de Madrid, Madrid, Spain
