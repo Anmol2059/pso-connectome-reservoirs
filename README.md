@@ -1,10 +1,10 @@
 <div align="center">
 
-# 🧠 Wild Reservoirs
+# Wild Reservoirs
 
-### *Bio-Inspired Swarm & Evolutionary Optimisation of Neural Connectomes — from Worm to Human*
+### *Bio-Inspired Swarm Optimisation of Neural Connectomes — from Worm to Human*
 
-**Can algorithms born from animal behaviour rediscover what evolution wired into animal brains?**
+**Can algorithms born from animal behaviour outperform what evolution wired into animal brains?**
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white)](https://python.org)
 [![PyTorch](https://img.shields.io/badge/PyTorch-CUDA-red?logo=pytorch&logoColor=white)](https://pytorch.org)
@@ -15,57 +15,75 @@
 
 ---
 
-## 🌍 The Big Picture
+## The Idea
 
-Real brains are wired by **500 million years of evolution**.
-Swarm optimisers are wired by **animal behaviour** — flocking birds, mutating genes, hunting wolves.
+Biological connectomes — the complete synaptic wiring diagrams of nervous systems — are natural substrates for reservoir computing. They are sparse, small-world, and shaped by evolution to process temporal information efficiently. But can bio-inspired optimisers make them *better*?
 
-We plug **7 real biological connectomes** directly into reservoir computers, then let three
-bio-inspired optimisers loose on the weights. Who wins — nature or the algorithm?
-
-> 📄 **Full experimental details →** [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md)
+We fix the biological sparsity pattern of **six real connectomes** (worm to human) and apply **four gradient-free swarm optimisers** to tune the edge weights. All four consistently and significantly outperform the unoptimised biological baseline across four benchmark tasks — with the Whale Optimisation Algorithm achieving up to a **17× memory improvement** and **89% NRMSE reduction**.
 
 ---
 
-## 🐾 Seven Real Brains
+## Architecture
 
-| | Animal | Nodes | Paper |
-|--|--------|------:|-------|
-| 🪱 | *C. elegans* — roundworm | 279 | [Varshney et al. 2011](https://doi.org/10.1371/journal.pcbi.1001066) |
-| 🪰 | *Drosophila* — fruit fly | 49 | [Chiang et al. 2011](https://doi.org/10.1016/j.cub.2010.11.056) |
-| 🐭 | Mouse cortex | 112 | [Rubinov et al. 2015](https://doi.org/10.1073/pnas.1420315112) |
-| 🐀 | Rat cortex | 73 | [Bota et al. 2015](https://doi.org/10.1073/pnas.1504394112) |
-| 🐒 | Macaque — binary | 242 | [Modha & Singh 2010](https://doi.org/10.1073/pnas.1008054107) |
-| 🐒 | Macaque — weighted (FLNe) | 29 | [Markov et al. 2014](https://doi.org/10.1093/cercor/bhs270) |
-| 🧑 | Human cortex (DTI) | 83 | [Cammoun et al. 2012](https://doi.org/10.1016/j.jneumeth.2011.09.031) |
+![Pipeline Architecture](project/images/architecture.png)
 
-All connectomes are real measurements — downloaded automatically via [`netneurotools`](https://github.com/netneurolab/netneurotools). No synthetic data.
+*Six biological connectomes seed the ESN weight matrix. Four bio-inspired optimisers tune edge weights via a held-out fitness loop. A ridge regression readout maps reservoir states to predictions on four benchmark tasks.*
 
 ---
 
-## 🦾 Three Bio-Inspired Optimisers
+## Six Real Connectomes
 
-| | Algorithm | Inspired by | Paper |
-|--|-----------|-------------|-------|
-| 🐦 | **PSO** — Particle Swarm Optimisation | Bird flocking & fish schooling | [Kennedy & Eberhart 1995](https://doi.org/10.1109/ICNN.1995.488968) |
-| 🧬 | **DE** — Differential Evolution | Genetic mutation & recombination | [Storn & Price 1997](https://doi.org/10.1023/A:1008202821328) |
-| 🐺 | **GWO** — Grey Wolf Optimiser | Wolf pack hunting hierarchy | [Mirjalili et al. 2014](https://doi.org/10.1016/j.advengsoft.2013.12.007) |
+| Animal | Nodes | Edges | Density | Method |
+|--------|------:|------:|--------:|--------|
+| *C. elegans* — nematode worm | 279 | 2,194 | 2.8% | Electron microscopy |
+| *Drosophila* — fruit fly | 49 | 1,950 | 82.9% | Confocal fluorescence |
+| Mouse cortex | 112 | 6,542 | 52.6% | Axonal tracing |
+| Rat cortex | 73 | 1,923 | 36.6% | Axonal tracing |
+| Macaque (FLNe weighted) | 29 | 590 | 72.7% | Retrograde tracing |
+| Human cortex (DTI) | 83 | 2,134 | 31.4% | Diffusion MRI |
 
-Each algorithm gets **1 000 objective evaluations** (20 particles × 50 iterations) per run,
-evaluated in parallel on GPU via batched `torch.bmm`.
-
----
-
-## 🧪 What We Measure
-
-| Task | Question | Metric |
-|------|----------|--------|
-| 💾 **Memory Capacity** | How many past inputs can the reservoir recall? | MC = Σ R² across 50 lags — higher is better |
-| 🌀 **Lorenz Prediction** | Can the reservoir forecast chaotic dynamics? | NRMSE — lower is better |
+All connectomes downloaded automatically via [`netneurotools`](https://github.com/netneurolab/netneurotools). No synthetic data.
 
 ---
 
-## ⚡ Quick Start
+## Four Bio-Inspired Optimisers
+
+| Algorithm | Inspired By | Key Parameters |
+|-----------|-------------|----------------|
+| **PSO** — Particle Swarm Optimisation | Bird flocking | w=0.7, c1=c2=2.0 |
+| **DE** — Differential Evolution | Genetic mutation | F=0.8, CR=0.9 |
+| **GWO** — Grey Wolf Optimiser | Wolf pack hierarchy | α, β, δ leaders |
+| **WOA** — Whale Optimisation Algorithm | Humpback bubble-net | spiral b=1.0 |
+
+All algorithms share an identical budget: **20 particles × 50 iterations = 1,000 evaluations per run**, evaluated in parallel on GPU.
+
+---
+
+## Four Benchmark Tasks
+
+| Task | What It Measures | Metric |
+|------|-----------------|--------|
+| **Memory Capacity (MC)** | Linear short-term memory: how many past inputs can the reservoir recall? | MC = Σ r²(û(t−k), u(t−k)), k=1..50 — higher is better |
+| **Lorenz Attractor** | One-step-ahead prediction of chaotic dynamics (σ=10, ρ=28, β=8/3) | NRMSE — lower is better |
+| **NARMA-10** | Nonlinear system identification requiring 10-step memory | NRMSE — lower is better |
+| **Mackey–Glass** | Chaotic time-series forecasting (τ=17, chaotic regime) | NRMSE — lower is better |
+
+---
+
+## Key Results
+
+| Metric | Best Result | Species | Algorithm |
+|--------|------------|---------|-----------|
+| Max MC improvement | 17× (1.39 → 23.91) | *C. elegans* | WOA |
+| Max NRMSE reduction | 89% (Mackey–Glass) | Human | WOA |
+| Mean improvement across all species × tasks | +214% | — | WOA |
+| Algorithm ranking | WOA > GWO > DE > PSO | — | — |
+
+**Critical finding:** Random initialisation on the same topology consistently underperforms the biological baseline — the biological *weight values*, not just the sparsity pattern, are an essential inductive bias that 1,000 gradient-free evaluations cannot recover from scratch.
+
+---
+
+## Quick Start
 
 ```bash
 git clone https://github.com/Anmol2059/pso-connectome-reservoirs.git
@@ -78,27 +96,47 @@ pip install -r requirements.txt
 git clone https://github.com/netneurolab/conn2res.git
 cd conn2res && pip install --no-deps . && cd ..
 
-# Run everything (~70-100 min on GPU)
+# Run full pipeline (~70-100 min on GPU)
 cd project && bash run.sh
 ```
 
 ---
 
-## 🗂️ Pipeline at a Glance
+## Pipeline
 
 ```
 bash run.sh
-├── 00  fetch_real_connectomes.py  →  download 7 connectomes
-├── 01  step01_explore.py          →  visualise networks
-├── 02  step02_baselines.py        →  biological MC + Lorenz baselines
-├── 03  step03_pso.py              →  PSO 🐦 + DE 🧬 + GWO 🐺 optimisation
-├── 04  step04_analysis.py         →  stats, Cohen's d, graph metrics
-└── 05  step05_summary.py          →  full report → data/summary.txt
+├── step02_baselines.py        →  biological baselines (MC, Lorenz, NARMA, MG) for all 6 species
+├── step03_pso.py              →  PSO · DE · GWO · WOA optimisation, all species × tasks × 10 runs
+└── step06_publication_figures.py  →  all paper figures (heatmap, radar, convergence, etc.)
+```
+
+Results saved to `project/data/opt_results.csv`.
+
+---
+
+## Repository Structure
+
+```
+pso-connectome-reservoirs/
+├── project/
+│   ├── data/
+│   │   ├── opt_results.csv          # all optimisation results (6 species × 4 tasks × 4 algorithms × 10 runs)
+│   │   ├── baseline_results.csv     # biological baseline scores
+│   │   └── {species}/conn_*.npy    # optimised weight matrices
+│   ├── images/                      # all publication figures
+│   ├── step02_baselines.py
+│   ├── step03_pso.py
+│   └── step06_publication_figures.py
+├── overleaf-pso-paper/              # LaTeX source (linked to Overleaf)
+│   ├── bio-inspired.tex
+│   └── images/
+└── requirements.txt
 ```
 
 ---
 
-## 💻 Runtime
+## Runtime
 
 | Hardware | Estimated Time |
 |----------|:--------------:|
@@ -108,17 +146,25 @@ bash run.sh
 
 ---
 
-## 🙏 Acknowledgements
+## Citation
 
-We thank the neuroscience teams who made their data openly available:
+```
+A. Guragain, S. Kakalis, and J. I. Godino-Llorente,
+"The Whale That Outswam Evolution: Swarm Intelligence Maximises Memory in Connectome Reservoirs,"
+ETSI de Telecomunicación, Universidad Politécnica de Madrid, 2025.
+```
 
-[Varshney 2011](https://doi.org/10.1371/journal.pcbi.1001066) · [Chiang 2011](https://doi.org/10.1016/j.cub.2010.11.056) · [Rubinov 2015](https://doi.org/10.1073/pnas.1420315112) · [Bota 2015](https://doi.org/10.1073/pnas.1504394112) · [Modha 2010](https://doi.org/10.1073/pnas.1008054107) · [Markov 2014](https://doi.org/10.1093/cercor/bhs270) · [Cammoun 2012](https://doi.org/10.1016/j.jneumeth.2011.09.031) · [netneurotools](https://github.com/netneurolab/netneurotools) · [conn2res](https://github.com/netneurolab/conn2res)
+---
+
+## Acknowledgements
+
+[Varshney 2011](https://doi.org/10.1371/journal.pcbi.1001066) · [Chiang 2011](https://doi.org/10.1016/j.cub.2010.11.056) · [Rubinov 2015](https://doi.org/10.1073/pnas.1420315112) · [Bota 2015](https://doi.org/10.1073/pnas.1504394112) · [Markov 2014](https://doi.org/10.1093/cercor/bhs270) · [Cammoun 2012](https://doi.org/10.1016/j.jneumeth.2011.09.031) · [netneurotools](https://github.com/netneurolab/netneurotools) · [conn2res](https://github.com/netneurolab/conn2res)
 
 ---
 
 <div align="center">
 
-**Anmol Guragain · Savvas Kakalis · Juan Ignacio Godino Llorente**
+**Anmol Guragain · Savvas Kakalis · Juan Ignacio Godino-Llorente**
 
 *ETSI de Telecomunicación, Universidad Politécnica de Madrid*
 
