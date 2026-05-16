@@ -86,7 +86,7 @@ All algorithms share an identical budget: **20 particles × 50 iterations = 1,00
 ## Quick Start
 
 ```bash
-git clone https://github.com/Anmol2059/pso-connectome-reservoirs.git
+git clone https://github.com/Anmol2059/connectome-reservoir-optimisation.git
 cd pso-connectome-reservoirs
 
 python -m venv venv && source venv/bin/activate
