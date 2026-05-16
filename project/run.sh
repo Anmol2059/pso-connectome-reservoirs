@@ -1,39 +1,40 @@
 #!/bin/bash
 # ============================================================
 # Wild Reservoirs — Full Pipeline
-# From Worm to Human: Bio-Inspired Optimisation of Neural Connectomes
+# Bio-Inspired Optimisation of Neural Connectomes (Worm → Human)
 # ============================================================
 # Run from the project/ directory:
-#   cd /path/to/project
-#   bash run.sh
+#   cd /path/to/project && bash run.sh
 #
 # Steps:
-#   0. fetch_real_connectomes.py  — download 7 biological connectomes
-#                                   (C. elegans, fly, mouse, rat,
-#                                    macaque-binary, macaque-weighted, human)
-#   1. step01_explore.py          — visualise connectomes
-#   2. step02_baselines.py        — MC + Lorenz baselines (5 runs, RidgeCV)
-#   3. step03_pso.py              — PSO/DE/GWO optimisation (5 runs × 7 species)
-#                                   both MC and Lorenz tasks, held-out evaluation
-#   4. step04_analysis.py         — stats + Cohen's d + graph topology metrics
-#   5. step05_summary.py          — generate data/summary.txt
+#   00. fetch_real_connectomes.py  — download 6 biological connectomes
+#                                    (C. elegans, fly, mouse, rat,
+#                                     macaque-weighted, human)
+#   01. step01_explore.py          — visualise connectome matrices + degree distributions
+#   02. step02_baselines.py        — MC + Lorenz baselines (10 runs, RidgeCV)
+#   03. step03_pso.py              — PSO/DE/GWO/WOA × MC/Lorenz/NARMA-10/Mackey-Glass
+#                                    (10 runs × 4 algorithms × 4 tasks × 6 species)
+#   06. step06_publication_figures.py — publication-quality figures (heatmap, radar,
+#                                    network graphs, violin, correlation, dot plot)
+#
+# NOTE: step04_analysis.py and step05_summary.py need updating to the
+#       new CSV format (opt_results.csv) — skipped for now.
 #
 # Estimated runtime on NVIDIA RTX 6000 Ada (CUDA):
-#   step02: ~5 min   (RidgeCV baselines, 7 species)
-#   step03: ~60-90 min (PSO+DE+GWO × MC+Lorenz × 7 species)
-#   other steps: ~3 min total
-#   TOTAL: ~45-70 min
+#   step02: ~5 min
+#   step03: ~3-5 hours  (4 algs × 4 tasks × 6 species × 10 runs × 1000 evals)
+#   step06: ~2 min
+#   TOTAL:  ~3-5 hours
 #
-# Without GPU (CPU only): ~3-5x longer for step03
+# Without GPU (CPU only): ~5-10x longer for step03.
 # ============================================================
 
-set -e   # exit immediately on any error
+set -e
 
 PYTHON="../venv/bin/python"
 LOG_DIR="logs"
 mkdir -p "$LOG_DIR"
 
-# ── helper ────────────────────────────────────────────────────────────────────
 run_step() {
     local step_num="$1"
     local script="$2"
@@ -47,35 +48,32 @@ run_step() {
     echo "  ✓ Step ${step_num} done  $(date)"
 }
 
-# ── start ─────────────────────────────────────────────────────────────────────
 PIPELINE_START=$(date +%s)
 echo "============================================================"
-echo "  PSO-Optimised Connectome Reservoirs — Full Pipeline"
+echo "  Wild Reservoirs — Full Pipeline"
 echo "  $(date)"
 echo "============================================================"
-echo "  Scientific fixes: held-out eval, rho=0.97, RidgeCV,"
-echo "  directed weighted graph metrics, Cohen's d, all-runs convergence plot"
+echo "  6 species: C. elegans, fly, mouse, rat, macaque (weighted), human"
+echo "  4 algorithms: PSO, DE, GWO, WOA"
+echo "  4 tasks: MC, Lorenz, NARMA-10, Mackey-Glass"
+echo "  10 runs per condition  |  held-out evaluation  |  GPU batch"
 echo "============================================================"
 
 run_step "00" "fetch_real_connectomes.py" \
-    "Download real biological connectomes (Chiang 2011, Rubinov 2015, Bota 2015, Modha 2010)"
+    "Download biological connectomes (C. elegans, fly, mouse, rat, macaque-W, human)"
 
 run_step "01" "step01_explore.py" \
-    "Explore & visualise connectomes → images/01_*.png, 02_*.png"
+    "Visualise connectomes → images/01_matrix_heatmaps.png, 02_degree_distributions.png"
 
 run_step "02" "step02_baselines.py" \
-    "MC + Lorenz baselines (5 runs, rho=0.97, RidgeCV) → data/baseline_results.csv"
+    "Biological baselines: MC + Lorenz (10 runs, rho=0.97, RidgeCV) → data/baseline_results.csv"
 
 run_step "03" "step03_pso.py" \
-    "PSO/DE/GWO (5 runs × 3 algorithms × 2 tasks × 7 species) → data/opt_results.csv"
+    "PSO/DE/GWO/WOA × MC/Lorenz/NARMA-10/MG × 6 species × 10 runs → data/opt_results.csv"
 
-run_step "04" "step04_analysis.py" \
-    "Stats + Cohen's d + weighted directed graph metrics → images/06_*.png, 07_*.png"
+run_step "06" "step06_publication_figures.py" \
+    "Publication figures: heatmap, radar, network graphs, violin, correlation, dot plot"
 
-run_step "05" "step05_summary.py" \
-    "Generate LLM-ready report summary → data/summary.txt"
-
-# ── summary ───────────────────────────────────────────────────────────────────
 PIPELINE_END=$(date +%s)
 ELAPSED=$(( PIPELINE_END - PIPELINE_START ))
 MINS=$(( ELAPSED / 60 ))
@@ -87,16 +85,13 @@ echo "  PIPELINE COMPLETE  $(date)"
 echo "  Total time: ${MINS}m ${SECS}s"
 echo "============================================================"
 echo ""
-echo "  Results:"
-echo "    data/baseline_results.csv  — MC + Lorenz per run (biological)"
-echo "    data/pso_results.csv       — PSO held-out scores per run"
-echo "    data/stats_summary.csv     — paired t-tests + Cohen's d"
-echo "    data/graph_metrics.csv     — weighted directed topology"
-echo "    data/input_sensitivity.csv — MC vs input node seed"
-echo "    data/summary.txt           — LLM-ready full report text"
+echo "  Data:"
+echo "    data/baseline_results.csv  — biological baselines (step02)"
+echo "    data/opt_results.csv       — all algorithm × task × species × run scores"
 echo ""
 echo "  Figures:"
-ls images/*.png 2>/dev/null | sed 's/^/    /'
+ls images/*.png 2>/dev/null | sed 's/^/    /' || echo "    (none yet)"
 echo ""
-echo "  Logs:  logs/step00.log … logs/step05.log"
+echo "  Logs:  logs/step00.log … logs/step06.log"
+echo "  NOTE:  step04 (stats) and step05 (summary) need CSV format update — run manually."
 echo "============================================================"

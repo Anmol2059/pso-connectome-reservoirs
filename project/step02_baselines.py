@@ -40,7 +40,7 @@ if os.path.exists(CONN2RES) and CONN2RES not in sys.path:
 os.makedirs(IMAGES_DIR, exist_ok=True)
 
 # ── config ─────────────────────────────────────────────────────────────────────
-SPECIES    = ['celegans', 'fly', 'mouse', 'rat', 'macaque_b', 'macaque_w', 'human']
+SPECIES    = ['celegans', 'fly', 'mouse', 'rat', 'macaque_w', 'human']
 N_RUNS     = 5       # independent evaluations per network
 N_SAMPLES  = 2000    # time steps per evaluation (after washout)
 MAX_LAG    = 50      # MC lags; extended from 20 → captures longer-range memory

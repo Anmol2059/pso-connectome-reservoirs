@@ -1,7 +1,7 @@
 """
 Step 03 — Multi-Algorithm Bio-Inspired Optimisation of Connectome Reservoirs
 =============================================================================
-Optimises biological connectome edge weights with three bio-inspired algorithms:
+Optimises biological connectome edge weights with four bio-inspired algorithms:
 
   PSO  — Particle Swarm Optimisation   (Kennedy & Eberhart 1995)
            Inspired by collective movement of birds/fish schools.
@@ -9,29 +9,31 @@ Optimises biological connectome edge weights with three bio-inspired algorithms:
            Inspired by Darwinian genetic recombination and mutation.
   GWO  — Grey Wolf Optimiser           (Mirjalili et al. 2014)
            Inspired by grey wolf pack hunting hierarchy (alpha/beta/delta).
+  WOA  — Whale Optimisation Algorithm  (Mirjalili & Lewis 2016)
+           Inspired by humpback whale bubble-net hunting strategy.
 
-All three are gradient-free, bio-inspired, and population-based.
-They are compared on two reservoir computing tasks:
-  MC      — Memory Capacity (sum of squared correlations up to MAX_LAG)
-  Lorenz  — Lorenz attractor NRMSE (one-step-ahead prediction)
+Tasks:
+  MC           — Memory Capacity (Σ R² over 50 lags; higher = better)
+  Lorenz       — Lorenz attractor NRMSE one-step-ahead (lower = better)
+  NARMA-10     — Nonlinear autoregressive moving-average NRMSE (lower = better)
+  Mackey-Glass — Mackey-Glass delay-differential chaotic NRMSE (lower = better)
 
 Conditions per species:
   Bio-A   — Optimiser initialised near biological weights (Gaussian perturbation)
-  Rand-B  — PSO only, initialised from uniform random weights (negative control)
+  Rand-B  — PSO only, random init (MC task only; negative control)
   Random  — Random re-weighting, no optimisation (null baseline)
   Bio     — Unoptimised biological weights (held-out evaluation)
 
 Scientific design:
   Held-out evaluation: optimisers search on signal A (seed=run),
   all reported scores use signal B (seed=run+EVAL_SEED_OFFSET).
-  PSO/DE/GWO all use the same GPU-batched objective for fair comparison.
-  All three use identical populations (N_PARTICLES=20, N_ITER=50).
+  All four algorithms use GPU-batched objectives for fair comparison.
+  Identical population: N_PARTICLES=20, N_ITER=50 per run.
 
 Outputs:
   data/opt_results.csv              — all conditions × algorithms × tasks × runs
-  data/{sp}/conn_{alg}_a.npy        — best weights per species/algorithm (MC task)
-  images/05_convergence_mc.png      — convergence curves (MC task)
-  images/05_convergence_lorenz.png  — convergence curves (Lorenz task)
+  data/{sp}/conn_{alg}_a.npy        — best MC weights per species/algorithm
+  images/05_convergence_{task}.png  — convergence curves per task
 """
 import os, sys, warnings, time
 import numpy as np
@@ -72,9 +74,9 @@ IMAGES_DIR = os.path.join(PROJ_DIR, 'images')
 os.makedirs(IMAGES_DIR, exist_ok=True)
 
 # ── config ─────────────────────────────────────────────────────────────────────
-SPECIES = ['celegans', 'fly', 'mouse', 'rat', 'macaque_b', 'macaque_w', 'human']
+SPECIES = ['celegans', 'fly', 'mouse', 'rat', 'macaque_w', 'human']
 
-N_RUNS       = 5
+N_RUNS       = 10
 N_SAMPLES    = 2000
 MAX_LAG      = 50
 WASHOUT      = 200
@@ -88,13 +90,14 @@ N_PARTICLES  = 20
 N_ITER       = 50      # 20×50 = 1000 evaluations per run
 
 PSO_OPTIONS  = {'c1': 2.0, 'c2': 2.0, 'w': 0.7}
-DE_F         = 0.8     # mutation factor
-DE_CR        = 0.9     # crossover rate
-WEIGHT_SCALE = 3.0     # search bound = bio_max × WEIGHT_SCALE
-RIDGE_ALPHA  = 1.0     # fixed Ridge in objective (CV too slow in inner loop)
+DE_F         = 0.8
+DE_CR        = 0.9
+WEIGHT_SCALE = 3.0
+RIDGE_ALPHA  = 1.0
 
-TASKS = ['mc', 'lorenz']
-ALGORITHMS = ['pso', 'de', 'gwo']
+TASKS            = ['mc', 'lorenz', 'narma10', 'mackey_glass']
+REGRESSION_TASKS = ['lorenz', 'narma10', 'mackey_glass']  # NRMSE, lower = better
+ALGORITHMS       = ['pso', 'de', 'gwo', 'woa']
 
 print(f'Config: {N_RUNS} runs × {N_PARTICLES} particles × {N_ITER} iter '
       f'= {N_PARTICLES*N_ITER} evals/run')
@@ -119,14 +122,67 @@ def lorenz_trajectory(n_steps, sigma=10., rho=28., beta=8./3., dt=0.02, seed=0):
 def make_lorenz_data(seed):
     n_total = WASHOUT + N_SAMPLES + 1
     traj = lorenz_trajectory(n_total, seed=seed)
-    x_full = traj[:, 0:1]          # use x-coordinate as input
-    x_in   = x_full[:-1]           # input at t
-    y_out  = x_full[1:, 0]         # predict x at t+1
-    # normalise
+    x_full = traj[:, 0:1]
+    x_in   = x_full[:-1]            # (WASHOUT+N_SAMPLES, 1)
+    y_out  = x_full[1:, 0]          # (WASHOUT+N_SAMPLES,)
     mu, std = x_in.mean(), x_in.std() + 1e-10
-    x_in = (x_in - mu) / std
+    x_in  = (x_in  - mu) / std
     y_out = (y_out - mu) / std
-    return x_in, y_out             # shapes (WASHOUT+N_SAMPLES, 1) and (WASHOUT+N_SAMPLES,)
+    return x_in, y_out
+
+
+# ── NARMA-10 ───────────────────────────────────────────────────────────────────
+def make_narma10_data(seed):
+    """
+    Nonlinear AutoRegressive Moving Average order-10 system.
+    y(t) = 0.3*y(t-1) + 0.05*y(t-1)*Σ_{i=1}^{10}y(t-i) + 1.5*u(t-10)*u(t-1) + 0.1
+    Input: u ~ Uniform[0, 0.5].  Target: y(t) (system identification, not prediction).
+    Atiya & Parlos 2000; Jaeger 2001.
+    """
+    n_total = WASHOUT + N_SAMPLES
+    n_buf   = 30   # burn-in buffer so initial y=0 doesn't corrupt targets
+    n_gen   = n_buf + n_total
+    rng     = np.random.default_rng(seed)
+    u = rng.uniform(0, 0.5, n_gen)
+    y = np.zeros(n_gen)
+    for t in range(10, n_gen):
+        y[t] = (0.3 * y[t-1]
+                + 0.05 * y[t-1] * float(np.sum(y[t-10:t]))
+                + 1.5 * u[t-10] * u[t-1]
+                + 0.1)
+    x_in  = u[n_buf:].reshape(-1, 1)   # (WASHOUT+N_SAMPLES, 1)
+    y_out = y[n_buf:]                    # (WASHOUT+N_SAMPLES,)
+    mu_u, std_u = x_in.mean(), x_in.std() + 1e-10
+    mu_y, std_y = y_out.mean(), y_out.std() + 1e-10
+    return (x_in - mu_u) / std_u, (y_out - mu_y) / std_y
+
+
+# ── Mackey-Glass ───────────────────────────────────────────────────────────────
+def make_mackey_glass_data(seed, tau=17, dt=0.1):
+    """
+    Mackey-Glass delay-differential equation (tau=17, chaotic regime).
+    dx/dt = 0.2*x(t-tau)/(1+x(t-tau)^10) - 0.1*x(t)
+    One-step-ahead prediction task.  Mackey & Glass 1977; Glass & Mackey 1988.
+    """
+    tau_steps = int(round(tau / dt))  # 170 delay steps
+    n_total   = WASHOUT + N_SAMPLES + 1
+    n_warmup  = 500   # discard transient
+    n_gen     = n_warmup + n_total
+
+    rng = np.random.default_rng(seed)
+    x0  = 1.2 + 0.1 * rng.standard_normal()
+    x   = np.zeros(n_gen + tau_steps)
+    x[:tau_steps] = x0
+
+    for t in range(tau_steps, n_gen + tau_steps):
+        x_del  = x[t - tau_steps]
+        x[t]   = x[t-1] + dt * (0.2 * x_del / (1.0 + x_del**10) - 0.1 * x[t-1])
+
+    series = x[tau_steps + n_warmup:]   # (n_total,)
+    x_in   = series[:-1].reshape(-1, 1) # (WASHOUT+N_SAMPLES, 1)
+    y_out  = series[1:]                  # (WASHOUT+N_SAMPLES,)
+    mu, std = x_in.mean(), x_in.std() + 1e-10
+    return (x_in - mu) / std, (y_out - mu) / std
 
 
 # ── MC data ────────────────────────────────────────────────────────────────────
@@ -141,6 +197,13 @@ def make_mc_data(seed):
     ])[WASHOUT:]
     return x_full, y_full
 
+
+TASK_DATA_FN = {
+    'mc':           make_mc_data,
+    'lorenz':       make_lorenz_data,
+    'narma10':      make_narma10_data,
+    'mackey_glass': make_mackey_glass_data,
+}
 
 # ── spectral radius ────────────────────────────────────────────────────────────
 def spectral_radius(w):
@@ -166,7 +229,7 @@ def sim_esn(w_r, u_proj, output_nodes, washout):
     return out
 
 
-# ── Ridge MC score ─────────────────────────────────────────────────────────────
+# ── Ridge readouts ─────────────────────────────────────────────────────────────
 def ridge_mc(rs, y_tgt, n_train):
     try:
         m = Ridge(alpha=RIDGE_ALPHA)
@@ -182,7 +245,8 @@ def ridge_mc(rs, y_tgt, n_train):
         return 0.0
 
 
-def ridge_lorenz_nrmse(rs, y_tgt, n_train):
+def ridge_regression_nrmse(rs, y_tgt, n_train):
+    """Shared NRMSE readout for Lorenz, NARMA-10, Mackey-Glass."""
     try:
         m = Ridge(alpha=RIDGE_ALPHA)
         m.fit(rs[:n_train], y_tgt[:n_train])
@@ -207,14 +271,16 @@ def score_mc(w_raw, w_in, output_nodes, u_proj, y_tgt):
         return 0.0
 
 
-def score_lorenz(w_raw, w_in, output_nodes, u_proj, y_tgt):
+def score_regression(w_raw, w_in, output_nodes, u_proj, y_tgt):
+    """Shared NRMSE scorer for Lorenz, NARMA-10, Mackey-Glass.
+    y_tgt must have shape (WASHOUT+N_SAMPLES,); washout is trimmed internally."""
     try:
         sr = spectral_radius(w_raw)
         if sr < 1e-10: return 1.0
         w_r     = (ALPHA / sr) * w_raw
         rs      = sim_esn(w_r, u_proj, output_nodes, WASHOUT)
         n_train = int(TRAIN_FRAC * N_SAMPLES)
-        return ridge_lorenz_nrmse(rs, y_tgt, n_train)
+        return ridge_regression_nrmse(rs, y_tgt[WASHOUT:], n_train)
     except Exception:
         return 1.0
 
@@ -227,25 +293,27 @@ def _batch_spectral_radius(W_batch, n_iter=50):
     for _ in range(n_iter):
         v = torch.bmm(W_batch, v)
         v = v / v.norm(dim=1, keepdim=True).clamp(min=1e-10)
-    return torch.bmm(W_batch, v).norm(dim=1).squeeze(-1)
+    Wv    = torch.bmm(W_batch, v)
+    sigma = (v * Wv).sum(dim=1).squeeze(-1).abs()
+    return sigma
 
 
-def _batch_sim_esn(W_batch, u_proj_t, output_nodes, washout):
-    P, n, _  = W_batch.shape
-    T_total  = len(u_proj_t)
-    T_use    = T_total - washout
-    n_out    = len(output_nodes)
-    s   = torch.zeros(P, n, device=W_batch.device, dtype=W_batch.dtype)
-    out = torch.empty(P, T_use, n_out, device=W_batch.device, dtype=W_batch.dtype)
-    for t in range(T_total):
-        s = torch.tanh(torch.bmm(s.unsqueeze(1), W_batch).squeeze(1) + u_proj_t[t])
+def _batch_sim_esn(W_scaled, u_t, out_idx, washout):
+    P, n, _ = W_scaled.shape
+    T       = u_t.shape[0]
+    T_use   = T - washout
+    s       = torch.zeros(P, n, device=W_scaled.device, dtype=W_scaled.dtype)
+    out     = torch.zeros(P, T_use, len(out_idx), device=W_scaled.device, dtype=W_scaled.dtype)
+    for t in range(T):
+        u_step = u_t[t].unsqueeze(0).expand(P, -1)
+        s = torch.tanh(torch.bmm(s.unsqueeze(1), W_scaled).squeeze(1) + u_step)
         if t >= washout:
-            out[:, t - washout, :] = s[:, output_nodes]
+            out[:, t - washout, :] = s[:, out_idx]
     return out.cpu().numpy()
 
 
 def make_batch_objective_mc(n, nz_rows, nz_cols, w_in, output_nodes, u_proj, y_tgt):
-    """GPU-batched objective: returns minimisation cost (-MC) for each particle."""
+    """Returns -MC cost (minimise -MC = maximise MC)."""
     if not USE_GPU:
         def cpu_obj(particles):
             costs = []
@@ -274,15 +342,17 @@ def make_batch_objective_mc(n, nz_rows, nz_cols, w_in, output_nodes, u_proj, y_t
     return gpu_obj
 
 
-def make_batch_objective_lorenz(n, nz_rows, nz_cols, w_in, output_nodes, u_proj, y_tgt):
-    """GPU-batched Lorenz objective: returns NRMSE for each particle."""
+def make_batch_objective_regression(n, nz_rows, nz_cols, w_in, output_nodes, u_proj, y_tgt):
+    """Returns NRMSE cost (minimise directly). Shared for Lorenz/NARMA-10/Mackey-Glass."""
+    y_tgt_trimmed = y_tgt[WASHOUT:]
+
     if not USE_GPU:
         def cpu_obj(particles):
-            costs = []
-            for p in particles:
-                w = np.zeros((n, n)); w[nz_rows, nz_cols] = np.abs(p)
-                costs.append(score_lorenz(w, w_in, output_nodes, u_proj, y_tgt))
-            return np.array(costs)
+            return np.array([
+                score_regression(
+                    weights_from_particle(p, n, nz_rows, nz_cols),
+                    w_in, output_nodes, u_proj, y_tgt)
+                for p in particles])
         return cpu_obj
 
     nz_r_t  = torch.tensor(nz_rows, device=DEVICE, dtype=torch.long)
@@ -299,7 +369,7 @@ def make_batch_objective_lorenz(n, nz_rows, nz_cols, w_in, output_nodes, u_proj,
         sr       = _batch_spectral_radius(W_raw).clamp(min=1e-10)
         W_scaled = W_raw * (ALPHA / sr).view(P, 1, 1)
         rs_np    = _batch_sim_esn(W_scaled, u_t, out_idx, WASHOUT)
-        return np.array([ridge_lorenz_nrmse(rs_np[i], y_tgt, n_train) for i in range(P)])
+        return np.array([ridge_regression_nrmse(rs_np[i], y_tgt_trimmed, n_train) for i in range(P)])
 
     return gpu_obj
 
@@ -312,7 +382,6 @@ def weights_from_particle(p, n, nz_rows, nz_cols):
 
 # ── PSO ───────────────────────────────────────────────────────────────────────
 def run_pso(objective, bounds_lb, bounds_ub, n_particles, n_iter, init_pos, label):
-    """Wrapper around pyswarms GlobalBestPSO with tqdm history tracking."""
     n_dims  = len(bounds_lb)
     history = []
 
@@ -348,11 +417,6 @@ def run_pso(objective, bounds_lb, bounds_ub, n_particles, n_iter, init_pos, labe
 # ── DE (Storn & Price 1997) ───────────────────────────────────────────────────
 def run_de(objective, bounds_lb, bounds_ub, n_particles, n_iter, init_pos, label,
            F=DE_F, CR=DE_CR, seed=0):
-    """
-    Vectorised DE/rand/1/bin using the shared GPU-batched objective.
-    All trial vectors are evaluated in a single batch call per iteration.
-    Storn R & Price KV (1997) J Global Optim 11:341-359.
-    """
     n_dims = len(bounds_lb)
     rng    = np.random.default_rng(seed)
     pop    = np.clip(init_pos.copy(), bounds_lb, bounds_ub)
@@ -371,14 +435,13 @@ def run_de(objective, bounds_lb, bounds_ub, n_particles, n_iter, init_pos, label
                 mask[rng.integers(n_dims)] = True
             trials[i] = np.where(mask, mutant, pop[i])
 
-        trial_scores = objective(trials)          # single GPU batch call
+        trial_scores = objective(trials)
         improved     = trial_scores < scores
         pop[improved]    = trials[improved]
         scores[improved] = trial_scores[improved]
 
-        best_mc = -scores.min()
-        history.append(best_mc)
-        pbar.set_postfix(best=f'{best_mc:.3f}')
+        history.append(-scores.min())
+        pbar.set_postfix(best=f'{history[-1]:.3f}')
         pbar.update(1)
     pbar.close()
 
@@ -388,11 +451,6 @@ def run_de(objective, bounds_lb, bounds_ub, n_particles, n_iter, init_pos, label
 
 # ── GWO (Mirjalili et al. 2014) ──────────────────────────────────────────────
 def run_gwo(objective, bounds_lb, bounds_ub, n_wolves, n_iter, init_pos, label, seed=0):
-    """
-    Vectorised Grey Wolf Optimiser using GPU-batched objective.
-    All wolves are updated and evaluated as a batch per iteration.
-    Mirjalili S et al. (2014) Adv Eng Softw 69:46-61.
-    """
     n_dims = len(bounds_lb)
     rng    = np.random.default_rng(seed)
     wolves = np.clip(init_pos.copy(), bounds_lb, bounds_ub)
@@ -408,7 +466,7 @@ def run_gwo(objective, bounds_lb, bounds_ub, n_wolves, n_iter, init_pos, label, 
     pbar = tqdm(total=n_iter, desc=label, unit='iter', leave=False)
 
     for t in range(n_iter):
-        a = 2.0 * (1.0 - t / n_iter)   # linearly 2 → 0
+        a = 2.0 * (1.0 - t / n_iter)
 
         r1 = rng.random((n_wolves, n_dims))
         r2 = rng.random((n_wolves, n_dims))
@@ -423,7 +481,7 @@ def run_gwo(objective, bounds_lb, bounds_ub, n_wolves, n_iter, init_pos, label, 
         X3 = delta_pos - (2*a*r1 - a) * np.abs(2*r2*delta_pos - wolves)
 
         wolves = np.clip((X1 + X2 + X3) / 3.0, bounds_lb, bounds_ub)
-        scores = objective(wolves)          # single GPU batch call
+        scores = objective(wolves)
 
         si = np.argsort(scores)
         if scores[si[0]] < alpha_score:
@@ -432,23 +490,91 @@ def run_gwo(objective, bounds_lb, bounds_ub, n_wolves, n_iter, init_pos, label, 
             beta_pos    = wolves[si[1]].copy()
             delta_pos   = wolves[si[2]].copy()
 
-        best_mc = -alpha_score
-        history.append(best_mc)
-        pbar.set_postfix(best=f'{best_mc:.3f}')
+        history.append(-alpha_score)
+        pbar.set_postfix(best=f'{history[-1]:.3f}')
         pbar.update(1)
     pbar.close()
 
     return alpha_pos, -alpha_score, history
 
 
-OPTIMIZER_FN = {'pso': run_pso, 'de': run_de, 'gwo': run_gwo}
+# ── WOA (Mirjalili & Lewis 2016) ──────────────────────────────────────────────
+def run_woa(objective, bounds_lb, bounds_ub, n_whales, n_iter, init_pos, label, seed=0):
+    """
+    Vectorised Whale Optimisation Algorithm.
+    Encircling prey, bubble-net attack (spiral), and random search in one batch.
+    Mirjalili S & Lewis A (2016) Adv Eng Softw 95:51-67.
+    """
+    n_dims = len(bounds_lb)
+    rng    = np.random.default_rng(seed)
+    whales = np.clip(init_pos.copy(), bounds_lb, bounds_ub)
+    scores = objective(whales)
+
+    best_idx   = int(np.argmin(scores))
+    best_pos   = whales[best_idx].copy()
+    best_score = scores[best_idx]
+
+    history = []
+    pbar = tqdm(total=n_iter, desc=label, unit='iter', leave=False)
+
+    for t in range(n_iter):
+        a   = 2.0 * (1.0 - t / n_iter)   # linearly 2 → 0
+        b   = 1.0                          # spiral shape constant
+
+        r1  = rng.random((n_whales, n_dims))
+        r2  = rng.random((n_whales, n_dims))
+        A   = 2.0 * a * r1 - a            # (N, D)
+        C   = 2.0 * r2                     # (N, D)
+        p   = rng.random(n_whales)         # (N,)   switch encircle ↔ spiral
+        l   = rng.uniform(-1, 1, (n_whales, n_dims))
+
+        # Encircling prey
+        D_enc = np.abs(C * best_pos - whales)
+        enc   = best_pos - A * D_enc
+
+        # Random search (exploration, |A| >= 1)
+        rand_idx = rng.integers(n_whales, size=n_whales)
+        rand_pos = whales[rand_idx]
+        D_rand   = np.abs(C * rand_pos - whales)
+        rnd      = rand_pos - A * D_rand
+
+        # Bubble-net spiral attack
+        D_spi = np.abs(best_pos - whales)
+        spi   = D_spi * np.exp(b * l) * np.cos(2.0 * np.pi * l) + best_pos
+
+        A_norm = np.abs(A).mean(axis=1)    # (N,)
+        # Rule: p < 0.5 → encircle/random, p >= 0.5 → spiral
+        use_spiral  = (p >= 0.5)[:, None]
+        use_random  = (~use_spiral.squeeze(-1) & (A_norm >= 1))[:, None]
+        use_encircle = (~use_spiral.squeeze(-1) & (A_norm < 1))[:, None]
+
+        new_whales = (use_encircle * enc
+                      + use_random  * rnd
+                      + use_spiral  * spi)
+        whales = np.clip(new_whales, bounds_lb, bounds_ub)
+        scores = objective(whales)
+
+        idx = int(np.argmin(scores))
+        if scores[idx] < best_score:
+            best_score = scores[idx]
+            best_pos   = whales[idx].copy()
+
+        history.append(-best_score)
+        pbar.set_postfix(best=f'{history[-1]:.3f}')
+        pbar.update(1)
+
+    pbar.close()
+    return best_pos, -best_score, history
+
+
+OPTIMIZER_FN = {'pso': run_pso, 'de': run_de, 'gwo': run_gwo, 'woa': run_woa}
 
 
 # ── main loop ─────────────────────────────────────────────────────────────────
-all_rows     = []
-conv_mc      = {sp: {alg: [] for alg in ALGORITHMS} for sp in SPECIES}
-conv_lorenz  = {sp: {alg: [] for alg in ALGORITHMS} for sp in SPECIES}
-t0_total     = time.time()
+all_rows = []
+conv     = {task: {sp: {alg: [] for alg in ALGORITHMS} for sp in SPECIES}
+            for task in TASKS}
+t0_total = time.time()
 
 for sp in SPECIES:
     t0_sp  = time.time()
@@ -464,9 +590,10 @@ for sp in SPECIES:
     bounds_lb      = np.zeros(n_weights)
     bounds_ub      = np.full(n_weights, max_w)
 
-    input_nodes    = np.where(labels == 1)[0]
-    output_nodes   = np.where(labels == 0)[0]
-    w_in           = np.zeros((1, n))
+    input_nodes  = np.where(labels == 1)[0]
+    output_nodes = np.where(labels == 0)[0]
+
+    w_in = np.zeros((1, n))
     w_in[:, input_nodes] = 1.0 / max(1, len(input_nodes))
 
     print(f'\n{"="*65}')
@@ -477,92 +604,94 @@ for sp in SPECIES:
         print(f'\n  Run {run+1}/{N_RUNS}')
         init_rng = np.random.default_rng(run * 997 + 31)
 
-        # Separate optimisation and held-out evaluation signals
-        x_mc_opt,  y_mc_opt  = make_mc_data(seed=run)
-        x_mc_eval, y_mc_eval = make_mc_data(seed=run + EVAL_SEED_OFFSET)
-        x_lz_opt,  y_lz_opt  = make_lorenz_data(seed=run)
-        x_lz_eval, y_lz_eval = make_lorenz_data(seed=run + EVAL_SEED_OFFSET)
+        # ── generate data for all tasks (opt + held-out eval) ──────────────
+        _data_opt  = {t: TASK_DATA_FN[t](seed=run)                    for t in TASKS}
+        _data_eval = {t: TASK_DATA_FN[t](seed=run + EVAL_SEED_OFFSET) for t in TASKS}
+        x_opt  = {t: _data_opt[t][0]  for t in TASKS}
+        y_opt  = {t: _data_opt[t][1]  for t in TASKS}
+        x_eval = {t: _data_eval[t][0] for t in TASKS}
+        y_eval = {t: _data_eval[t][1] for t in TASKS}
 
-        u_mc_opt  = x_mc_opt  @ w_in
-        u_mc_eval = x_mc_eval @ w_in
-        u_lz_opt  = x_lz_opt  @ w_in
-        u_lz_eval = x_lz_eval @ w_in
+        # project inputs onto reservoir input nodes
+        u_opt  = {t: x_opt[t]  @ w_in for t in TASKS}
+        u_eval = {t: x_eval[t] @ w_in for t in TASKS}
 
-        # Bio-A initialisation (perturbed biological weights)
+        # ── Bio-A / Rand-B initialisations ─────────────────────────────────
         noise  = init_rng.normal(0, MAX_PERTURB * bio_weights.std(),
                                  size=(N_PARTICLES, n_weights))
         init_a = np.clip(bio_weights[np.newaxis, :] + noise, 0, max_w)
-        # Rand-B initialisation (uniform random)
         init_b = init_rng.uniform(0, max_w, size=(N_PARTICLES, n_weights))
 
-        # Shared GPU objectives per task
-        obj_mc_opt   = make_batch_objective_mc(
-            n, nz_rows, nz_cols, w_in, output_nodes, u_mc_opt,  y_mc_opt)
-        obj_lz_opt   = make_batch_objective_lorenz(
-            n, nz_rows, nz_cols, w_in, output_nodes, u_lz_opt,  y_lz_opt)
+        # ── batch objectives for optimisation ──────────────────────────────
+        obj_opt = {}
+        obj_opt['mc'] = make_batch_objective_mc(
+            n, nz_rows, nz_cols, w_in, output_nodes, u_opt['mc'], y_opt['mc'])
+        for task in REGRESSION_TASKS:
+            obj_opt[task] = make_batch_objective_regression(
+                n, nz_rows, nz_cols, w_in, output_nodes, u_opt[task], y_opt[task])
 
         row = {'species': sp, 'run': run,
                'n_nodes': n, 'n_edges': n_weights, 'is_binary': is_binary}
 
-        # Bio (unoptimised) on held-out signals
+        # ── Bio (unoptimised) on held-out signals ──────────────────────────
         w_bio_eval = w_bio.copy()
-        row['mc_bio']     = score_mc(w_bio_eval, w_in, output_nodes, u_mc_eval, y_mc_eval)
-        row['lorenz_bio'] = score_lorenz(w_bio_eval, w_in, output_nodes, u_lz_eval, y_lz_eval)
+        row['mc_bio'] = score_mc(w_bio_eval, w_in, output_nodes,
+                                 u_eval['mc'], y_eval['mc'])
+        for task in REGRESSION_TASKS:
+            row[f'{task}_bio'] = score_regression(
+                w_bio_eval, w_in, output_nodes, u_eval[task], y_eval[task])
 
-        # Random null
+        # ── Random null ────────────────────────────────────────────────────
         w_rand = np.zeros((n, n))
         w_rand[nz_rows, nz_cols] = init_rng.uniform(0, max_w, n_weights)
-        row['mc_random']     = score_mc(w_rand, w_in, output_nodes, u_mc_eval, y_mc_eval)
-        row['lorenz_random'] = score_lorenz(w_rand, w_in, output_nodes, u_lz_eval, y_lz_eval)
+        row['mc_random'] = score_mc(w_rand, w_in, output_nodes,
+                                    u_eval['mc'], y_eval['mc'])
+        for task in REGRESSION_TASKS:
+            row[f'{task}_random'] = score_regression(
+                w_rand, w_in, output_nodes, u_eval[task], y_eval[task])
 
-        # PSO-B (random init, MC task only — negative control)
-        seed_b = run * 13 + 7
-        best_b, score_b_mc, _ = OPTIMIZER_FN['pso'](
-            obj_mc_opt, bounds_lb, bounds_ub, N_PARTICLES, N_ITER,
+        # ── PSO-B (random init, MC only — negative control) ────────────────
+        best_b, _, _ = run_pso(
+            obj_opt['mc'], bounds_lb, bounds_ub, N_PARTICLES, N_ITER,
             init_b.copy(), f'{sp.upper()} PSO-B MC r{run}')
         w_best_b = weights_from_particle(best_b, n, nz_rows, nz_cols)
-        row['mc_pso_b'] = score_mc(w_best_b, w_in, output_nodes, u_mc_eval, y_mc_eval)
+        row['mc_pso_b'] = score_mc(w_best_b, w_in, output_nodes,
+                                   u_eval['mc'], y_eval['mc'])
 
-        # Bio-A: all 3 algorithms × 2 tasks
+        # ── Bio-A: all algorithms × all tasks ─────────────────────────────
         for alg in ALGORITHMS:
-            fn = OPTIMIZER_FN[alg]
-            alg_seed = run * 997 + 31 + hash(alg) % 100
+            fn        = OPTIMIZER_FN[alg]
+            alg_seed  = run * 997 + 31 + hash(alg) % 100
+            needs_seed = (alg != 'pso')
 
-            # MC optimisation
-            lbl_mc = f'{sp.upper()} {alg.upper()}-A MC r{run}'
-            best_mc_pos, _, hist_mc = fn(
-                obj_mc_opt, bounds_lb, bounds_ub, N_PARTICLES, N_ITER,
-                init_a.copy(), lbl_mc, **({'seed': alg_seed} if alg != 'pso' else {}))
-            w_mc = weights_from_particle(best_mc_pos, n, nz_rows, nz_cols)
-            row[f'mc_{alg}_a']  = score_mc(w_mc, w_in, output_nodes, u_mc_eval, y_mc_eval)
-            conv_mc[sp][alg].append(hist_mc)
+            for task_idx, task in enumerate(TASKS):
+                lbl    = f'{sp.upper()} {alg.upper()}-A {task.upper()} r{run}'
+                kwargs = {'seed': alg_seed + task_idx} if needs_seed else {}
+                best_pos, _, hist = fn(
+                    obj_opt[task], bounds_lb, bounds_ub, N_PARTICLES, N_ITER,
+                    init_a.copy(), lbl, **kwargs)
 
-            # Lorenz optimisation
-            lbl_lz = f'{sp.upper()} {alg.upper()}-A Lorenz r{run}'
-            best_lz_pos, _, hist_lz = fn(
-                obj_lz_opt, bounds_lb, bounds_ub, N_PARTICLES, N_ITER,
-                init_a.copy(), lbl_lz, **({'seed': alg_seed + 1} if alg != 'pso' else {}))
-            w_lz = weights_from_particle(best_lz_pos, n, nz_rows, nz_cols)
-            row[f'lorenz_{alg}_a'] = score_lorenz(w_lz, w_in, output_nodes, u_lz_eval, y_lz_eval)
-            conv_lorenz[sp][alg].append(hist_lz)
+                w_best = weights_from_particle(best_pos, n, nz_rows, nz_cols)
+                if task == 'mc':
+                    row[f'mc_{alg}_a'] = score_mc(
+                        w_best, w_in, output_nodes, u_eval['mc'], y_eval['mc'])
+                else:
+                    row[f'{task}_{alg}_a'] = score_regression(
+                        w_best, w_in, output_nodes, u_eval[task], y_eval[task])
 
-            # Save best weights (MC task, first run)
-            if run == 0:
-                sp_dir = os.path.join(DATA_DIR, sp)
-                np.save(os.path.join(sp_dir, f'conn_{alg}_a.npy'), w_mc)
+                conv[task][sp][alg].append(hist)
+
+                if run == 0 and task == 'mc':
+                    sp_dir = os.path.join(DATA_DIR, sp)
+                    np.save(os.path.join(sp_dir, f'conn_{alg}_a.npy'), w_best)
 
         all_rows.append(row)
 
-        print(f'    MC:  bio={row["mc_bio"]:.3f}  '
-              f'pso={row.get("mc_pso_a"):.3f}  '
-              f'de={row.get("mc_de_a"):.3f}  '
-              f'gwo={row.get("mc_gwo_a"):.3f}  '
-              f'rand={row["mc_random"]:.3f}')
-        print(f'    Lz:  bio={row["lorenz_bio"]:.4f}  '
-              f'pso={row.get("lorenz_pso_a"):.4f}  '
-              f'de={row.get("lorenz_de_a"):.4f}  '
-              f'gwo={row.get("lorenz_gwo_a"):.4f}  '
-              f'rand={row["lorenz_random"]:.4f}')
+        print(f'    MC:    bio={row["mc_bio"]:.3f}  '
+              + '  '.join(f'{a}={row.get(f"mc_{a}_a", 0):.3f}' for a in ALGORITHMS))
+        for task in REGRESSION_TASKS:
+            print(f'    {task.upper()[:10]:10s}: bio={row[f"{task}_bio"]:.4f}  '
+                  + '  '.join(f'{a}={row.get(f"{task}_{a}_a", 1):.4f}' for a in ALGORITHMS))
 
     elapsed = time.time() - t0_sp
     print(f'\n  {sp.upper()} done ({elapsed:.0f}s = {elapsed/60:.1f} min)')
@@ -573,11 +702,19 @@ df.to_csv(os.path.join(DATA_DIR, 'opt_results.csv'), index=False)
 print(f'\nSaved: opt_results.csv  ({len(df)} rows)')
 
 # ── convergence plots ──────────────────────────────────────────────────────────
-COLORS = {'pso': '#4CAF50', 'de': '#FF9800', 'gwo': '#9C27B0'}
-ALG_LABELS = {'pso': 'PSO', 'de': 'DE', 'gwo': 'GWO'}
+COLORS     = {'pso': '#4CAF50', 'de': '#FF9800', 'gwo': '#9C27B0', 'woa': '#E91E63'}
+ALG_LABELS = {'pso': 'PSO', 'de': 'DE', 'gwo': 'GWO', 'woa': 'WOA'}
+TASK_YLABS = {
+    'mc':           'MC Score (higher = better)',
+    'lorenz':       'NRMSE — Lorenz (lower = better)',
+    'narma10':      'NRMSE — NARMA-10 (lower = better)',
+    'mackey_glass': 'NRMSE — Mackey-Glass (lower = better)',
+}
 
-for task_name, conv_data in [('mc', conv_mc), ('lorenz', conv_lorenz)]:
-    ylab = 'MC Score' if task_name == 'mc' else 'NRMSE (lower = better)'
+for task_name in TASKS:
+    is_nrmse = (task_name in REGRESSION_TASKS)
+    ylab     = TASK_YLABS[task_name]
+
     fig, axes = plt.subplots(2, 4, figsize=(24, 10))
     axes = axes.flatten()
     fig.suptitle(
@@ -588,23 +725,21 @@ for task_name, conv_data in [('mc', conv_mc), ('lorenz', conv_lorenz)]:
 
     for ax_idx, sp in enumerate(SPECIES):
         ax = axes[ax_idx]
-        w_bio = np.load(os.path.join(DATA_DIR, sp, 'conn.npy'))
-        labels_sp = np.load(os.path.join(DATA_DIR, sp, 'labels.npy'))
-        output_nodes_sp = np.where(labels_sp == 0)[0]
-        w_in_sp = np.zeros((1, w_bio.shape[0]))
-        w_in_sp[:, np.where(labels_sp == 1)[0]] = 1.0 / max(1, int(labels_sp.sum()))
-        # average bio score across runs from df
         bio_mean = df[df.species == sp][f'{task_name}_bio'].mean()
 
         for alg in ALGORITHMS:
-            hists = conv_data[sp][alg]
+            hists = conv[task_name][sp][alg]
             if not hists: continue
-            best_idx = max(range(len(hists)), key=lambda i: hists[i][-1] if hists[i] else 0)
-            if task_name == 'lorenz':
-                best_idx = min(range(len(hists)), key=lambda i: hists[i][-1] if hists[i] else 1)
+            # best run = one with highest final history value (works for both MC and NRMSE
+            # because history = -cost, so higher = better for all tasks)
+            best_idx = max(range(len(hists)),
+                           key=lambda i: hists[i][-1] if hists[i] else -np.inf)
+
             for i, hist in enumerate(hists):
-                is_best = (i == best_idx)
-                ax.plot(range(1, len(hist)+1), hist,
+                is_best  = (i == best_idx)
+                # for NRMSE tasks, history = -NRMSE; negate for display
+                plot_val = [-v for v in hist] if is_nrmse else hist
+                ax.plot(range(1, len(plot_val)+1), plot_val,
                         color=COLORS[alg], lw=2.0 if is_best else 0.6,
                         alpha=0.9 if is_best else 0.2,
                         label=ALG_LABELS[alg] if is_best else None)
@@ -615,7 +750,6 @@ for task_name, conv_data in [('mc', conv_mc), ('lorenz', conv_lorenz)]:
         ax.set_ylabel(ylab)
         ax.legend(fontsize=8)
 
-    # hide unused subplots
     for ax_idx in range(len(SPECIES), len(axes)):
         axes[ax_idx].set_visible(False)
 
