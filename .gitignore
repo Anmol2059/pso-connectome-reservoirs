@@ -37,5 +37,15 @@ project/notebooks/report.log
 # conn2res dependency (install separately — see README)
 conn2res/
 
+# Overleaf paper repo (separate git repo, pushed to Overleaf directly)
+overleaf-pso-paper/
+
+# Stray top-level dirs
+images/
+
+# Old result snapshots
+project/data/*_OLD*
+project/data/summary_OLD.txt
+
 # Large generated outputs (optional — uncomment to exclude)
 # project/data/**/*.npy
